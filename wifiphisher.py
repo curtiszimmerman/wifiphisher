@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 # -*- coding: utf-8 -*-
 
 import os
@@ -8,11 +8,9 @@ import time
 import sys
 import SimpleHTTPServer
 import BaseHTTPServer
-import ConfigParser
 import httplib
 import SocketServer
 import cgi
-import string
 import argparse
 import fcntl
 from threading import Thread, Lock
@@ -43,14 +41,15 @@ T = '\033[93m'   # tan
 count = 0 # for channel hopping Thread
 APs = {} # for listing APs
 hop_daemon_running = True 
+lock = Lock()
 
 def parse_args():
     #Create the arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--channel", help="Choose the channel for monitoring. Default is channel 1", default="1")
     parser.add_argument("-s", "--skip", help="Skip deauthing this MAC address. Example: -s 00:11:BB:33:44:AA")
-    parser.add_argument("-jI", "--jamminginterface", help="Choose monitor mode interface. By default script will find the most powerful interface and starts monitor mode on it. Example: -i mon5")
-    parser.add_argument("-aI", "--apinterface", help="Choose monitor mode interface. By default script will find the most powerful interface and starts monitor mode on it. Example: -i mon5")
+    parser.add_argument("-jI", "--jamminginterface", help="Choose monitor mode interface. By default script will find the most powerful interface and starts monitor mode on it. Example: -jI mon5")
+    parser.add_argument("-aI", "--apinterface", help="Choose monitor mode interface. By default script will find the second most powerful interface and starts monitor mode on it. Example: -aI mon5")
     parser.add_argument("-m", "--maximum", help="Choose the maximum number of clients to deauth. List of clients will be emptied and repopulated after hitting the limit. Example: -m 5")
     parser.add_argument("-n", "--noupdate", help="Do not clear the deauth list when the maximum (-m) number of client/AP combos is reached. Must be used in conjunction with -m. Example: -m 10 -n", action='store_true')
     parser.add_argument("-t", "--timeinterval", help="Choose the time interval between packets being sent. Default is as fast as possible. If you see scapy errors like 'no buffer space' try: -t .00001")
@@ -73,11 +72,10 @@ class SecureHTTPServer(BaseHTTPServer.HTTPServer):
     """
     def __init__(self, server_address, HandlerClass):
         SocketServer.BaseServer.__init__(self, server_address, HandlerClass)
-        fpem = PEM
         self.socket = ssl.SSLSocket(
             socket.socket(self.address_family, self.socket_type),
-            keyfile=fpem,
-            certfile=fpem
+            keyfile=PEM,
+            certfile=PEM
         )
 
         self.server_bind()
@@ -267,27 +265,48 @@ def reset_interfaces():
 def get_internet_interface():
     '''return the wifi internet connected iface'''
     inet_iface = None
-    proc = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
-    def_route = proc.communicate()[0].split('\n')#[0].split()
-    for line in def_route:
-        if 'wlan' in line and 'default via' in line:
-            line = line.split()
-            inet_iface = line[4]
-            ipprefix = line[2][:2] # Just checking if it's 192, 172, or 10
-            return inet_iface
+
+    if os.path.isfile("/sbin/ip") == True:
+        proc = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
+        def_route = proc.communicate()[0].split('\n')#[0].split()
+        for line in def_route:
+            if 'wlan' in line and 'default via' in line:
+                line = line.split()
+                inet_iface = line[4]
+                ipprefix = line[2][:2] # Just checking if it's 192, 172, or 10
+                return inet_iface
+    else:
+        proc = open('/proc/net/route', 'r')
+        default = proc.readlines()[1]
+        if "wlan" in default:
+            def_route = default.split()[0]
+        x = iter(default.split()[2])
+        res = [ ''.join(i) for i in zip(x, x) ]
+        d = [ str(int(i, 16)) for i in res ]
+        return inet_iface
     return False
 
 def get_internet_ip_prefix():
     '''return the wifi internet connected IP prefix'''
     ipprefix = None
-    proc = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
-    def_route = proc.communicate()[0].split('\n')#[0].split()
-    for line in def_route:
-        if 'wlan' in line and 'default via' in line:
-            line = line.split()
-            inet_iface = line[4]
-            ipprefix = line[2][:2] # Just checking if it's 192, 172, or 10
-            return ipprefix
+    if os.path.isfile("/sbin/ip") == True:
+        proc = Popen(['/sbin/ip', 'route'], stdout=PIPE, stderr=DN)
+        def_route = proc.communicate()[0].split('\n')#[0].split()
+        for line in def_route:
+            if 'wlan' in line and 'default via' in line:
+                line = line.split()
+                inet_iface = line[4]
+                ipprefix = line[2][:2] # Just checking if it's 192, 172, or 10
+                return inet_iface
+    else:
+        proc = open('/proc/net/route', 'r')
+        default = proc.readlines()[1]
+        if "wlan" in default:
+            def_route = default.split()[0]
+        x = iter(default.split()[2])
+        res = [ ''.join(i) for i in zip(x, x) ]
+        d = [ str(int(i, 16)) for i in res ]
+        return ipprefix
     return False
 
 def channel_hop(mon_iface):
@@ -404,12 +423,12 @@ def dhcp(dhcpconf, mon_iface):
     os.system('echo > /var/lib/misc/dnsmasq.leases')
     dhcp = Popen(['dnsmasq', '-C', dhcpconf], stdout=PIPE, stderr=DN)
     ipprefix = get_internet_ip_prefix()
-    Popen(['ifconfig', mon_iface, 'mtu', '1400'], stdout=DN, stderr=DN)
+    Popen(['ifconfig', str(mon_iface), 'mtu', '1400'], stdout=DN, stderr=DN)
     if ipprefix == '19' or ipprefix == '17' or not ipprefix:
-        Popen(['ifconfig', mon_iface, 'up', '10.0.0.1', 'netmask', '255.255.255.0'], stdout=DN, stderr=DN)
+        Popen(['ifconfig', str(mon_iface), 'up', '10.0.0.1', 'netmask', '255.255.255.0'], stdout=DN, stderr=DN)
         os.system('route add -net 10.0.0.0 netmask 255.255.255.0 gw 10.0.0.1')
     else:
-        Popen(['ifconfig', mon_iface, 'up', '172.16.0.1', 'netmask', '255.255.255.0'], stdout=DN, stderr=DN)
+        Popen(['ifconfig', str(mon_iface), 'up', '172.16.0.1', 'netmask', '255.255.255.0'], stdout=DN, stderr=DN)
         os.system('route add -net 172.16.0.0 netmask 255.255.255.0 gw 172.16.0.1')
 
 
@@ -606,7 +625,7 @@ def APs_add(clients_APs, APs, pkt, chan_arg):
             if ap_channel != chan_arg:
                 return
 
-    except Exception as e:
+    except Exception:
         return
 
     if len(APs) == 0:
@@ -673,13 +692,13 @@ def get_hostapd():
 
 if __name__ == "__main__":
 
+    # Parse args
+    args = parse_args()
     # Are you root?
     if os.geteuid():
         sys.exit('[' + R + '-' + W + '] Please run as root')
     # Get hostapd if needed
     get_hostapd()
-    # Parse args
-    args = parse_args()
 
     # Start HTTP server in a background thread
     Handler = HTTPRequestHandler
@@ -728,7 +747,7 @@ if __name__ == "__main__":
     Popen(['sysctl', '-w', 'net.ipv4.conf.all.route_localnet=1'], stdout=DN, stderr=PIPE)
 
     print '[' + T + '*' + W + '] Cleared leases, started DHCP, set up iptables'
-
+    
     # Copy AP
     time.sleep(3)
     hop = Thread(target=channel_hop, args=(mon_iface,))
@@ -746,13 +765,11 @@ if __name__ == "__main__":
     print '[' + T + '*' + W + '] ' + T + \
           essid + W + ' set up on channel ' + \
           T + channel + W + ' via ' + T + mon_iface \
-          + W + ' on ' + T + ap_iface + W
+          + W + ' on ' + T + str(ap_iface) + W
 
 
     clients_APs = []
     APs = []
-    DN = open(os.devnull, 'w')
-    lock = Lock()
     args = parse_args()
     args.accesspoint = ap_mac
     args.channel = channel
